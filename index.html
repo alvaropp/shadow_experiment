@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coloured shadows</title>
+<style>
+  :root { --bg:#0e1015; --panel:#161922; --panel2:#1d212c; --line:#2a2f3d; --txt:#d8dce6; --dim:#8b93a7; --acc:#6ea8ff; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--txt);
+    font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; overflow:hidden; }
+  #app { display:grid; grid-template-columns:1fr 320px; height:100%; }
+  #main { display:flex; flex-direction:column; min-width:0; padding:12px; gap:10px; }
+  .view { position:relative; background:#000; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  #sideWrap { flex:0 0 28%; min-height:130px; background:#12151c; }
+  #floorWrap { flex:1 1 auto; min-height:0; cursor:ew-resize; touch-action:none; }
+  #sideWrap { touch-action:none; cursor:ew-resize; }
+  canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .tag { position:absolute; left:10px; top:8px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); pointer-events:none; text-shadow:0 1px 3px #000; }
+  #readout { position:absolute; right:10px; top:10px; background:rgba(14,16,21,.85); border:1px solid var(--line);
+    border-radius:8px; padding:8px 10px; font-size:12px; min-width:170px; pointer-events:none; display:none; }
+  #readout .sw { display:inline-block; width:14px; height:14px; border-radius:3px; vertical-align:middle; border:1px solid #fff3; margin-right:6px; }
+  #side { background:var(--panel); border-left:1px solid var(--line); padding:14px; overflow-y:auto; }
+  h1 { font-size:15px; margin:0 0 10px; font-weight:600; }
+  h2 { font-size:11px; margin:16px 0 6px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); font-weight:600; }
+  .bulb { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px; margin-bottom:6px; }
+  .bulb .row { display:flex; align-items:center; gap:8px; }
+  .bulb input[type=range] { flex:1; }
+  input[type=color] { width:30px; height:24px; padding:0; border:1px solid var(--line); border-radius:5px; background:none; }
+  .ctl { display:grid; grid-template-columns:92px 1fr 54px; align-items:center; gap:8px; margin:5px 0; }
+  .ctl span.v { text-align:right; color:var(--dim); font-variant-numeric:tabular-nums; }
+  input[type=range] { accent-color:var(--acc); width:100%; }
+  button { background:var(--panel2); color:var(--txt); border:1px solid var(--line); border-radius:6px; padding:5px 9px; cursor:pointer; font:inherit; }
+  button:hover { border-color:var(--acc); }
+  .presets { display:flex; flex-wrap:wrap; gap:6px; }
+  label.chk { display:flex; align-items:center; gap:6px; color:var(--txt); }
+  .why { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:10px; color:#b9c0d2; font-size:12.5px; }
+  .why b { color:var(--txt); }
+  .why ul { margin:6px 0 0; padding-left:18px; }
+  #panel { min-width:0; }
+  input[type=range] { min-width:0; }
+  .ctl { grid-template-columns:92px minmax(0,1fr) 54px; }
+  @media (max-width:800px){ #app{grid-template-columns:minmax(0,1fr); grid-template-rows:62% 38%;} #main{padding:8px;gap:8px;} #panel{border-left:0 !important;border-top:1px solid var(--line);} }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="main">
+    <div id="sideWrap" class="view"><canvas id="side"></canvas><div class="tag">Side view (x vs height; vertical scale stretched)</div></div>
+    <div id="floorWrap" class="view">
+      <canvas id="gl"></canvas><canvas id="ov"></canvas>
+      <div class="tag">Floor view (top down) - drag to move the hand</div>
+      <div id="readout"></div>
+    </div>
+  </div>
+  <aside id="panel" style="background:var(--panel);border-left:1px solid var(--line);padding:14px;overflow-y:auto">
+    <h1>Coloured shadows</h1>
+    <h2>Bulbs</h2>
+    <div id="bulbs"></div>
+    <h2>Presets</h2>
+    <div class="presets">
+      <button data-p="rgb">RGB</button><button data-p="wc">Warm / cool</button>
+      <button data-p="cmy">CMY</button><button data-p="white">All white</button>
+    </div>
+    <h2>Scene</h2>
+    <div id="sliders"></div>
+    <label class="chk"><input type="checkbox" id="showHand"> Show hand outline on floor</label>
+    <h2>Why?</h2>
+    <div class="why">
+      Each bulb lights the floor with its own colour. The hand blocks some bulbs at each spot. The spot gets
+      the <b>sum of the bulbs that are not blocked</b>.
+      <ul>
+        <li>Block blue: red + green = <b>yellow</b></li>
+        <li>Block red: green + blue = <b>cyan</b></li>
+        <li>Block green: red + blue = <b>magenta</b></li>
+        <li>Two shadows overlap: only the third colour stays</li>
+        <li>All three blocked (umbra): <b>black</b></li>
+      </ul>
+      Edges are soft because each bulb has a size. Part of a bulb can be hidden (penumbra).
+    </div>
+  </aside>
+</div>
+<script>
+"use strict";
+(function(){
+const app = document.getElementById('app');
+app.style.gridTemplateColumns = ''; // keep css
+
+// half view widths in metres. The side view always shows all bulbs.
+// On narrow screens the floor view zooms in on the area under the centre bulb.
+const sideXR=()=>Math.max(1.0,state.spacing+0.4);
+const floorXR=()=>W<700?0.55:sideXR();
+const NS = 40;            // light samples per bulb in shader
+const state = {
+  cols:['#ff0000','#00ff00','#0000ff'], inten:[1,1,1], on:[true,true,true],
+  R:0.03, h:0.35, H:2.0, spacing:0.6, alb:0.8, exp:0, hx:0.1, showHand:false, hover:null
+};
+
+// ---------- hand SDF (metres, local coords, mirrored in GLSL) ----------
+function sdCap(px,py,ax,ay,bx,by,r){
+  const pax=px-ax,pay=py-ay,bax=bx-ax,bay=by-ay;
+  const h=Math.min(1,Math.max(0,(pax*bax+pay*bay)/(bax*bax+bay*bay)));
+  return Math.hypot(pax-bax*h,pay-bay*h)-r;
+}
+function sdRBox(px,py,bx,by,r){
+  const qx=Math.abs(px)-bx+r,qy=Math.abs(py)-by+r;
+  return Math.hypot(Math.max(qx,0),Math.max(qy,0))+Math.min(Math.max(qx,qy),0)-r;
+}
+function sdHand(x,y){
+  y+=0.0475;
+  let d=sdRBox(x,y,0.043,0.045,0.02);
+  d=Math.min(d,sdCap(x,y,-0.0315,0.035,-0.0315,0.118,0.0100));
+  d=Math.min(d,sdCap(x,y,-0.0105,0.035,-0.0105,0.130,0.0100));
+  d=Math.min(d,sdCap(x,y, 0.0105,0.035, 0.0105,0.123,0.0100));
+  d=Math.min(d,sdCap(x,y, 0.0315,0.035, 0.0315,0.095,0.0090));
+  d=Math.min(d,sdCap(x,y,-0.035,-0.015,-0.085,0.035,0.0115));
+  return d;
+}
+
+// ---------- colour helpers ----------
+const s2l=c=>c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4);
+const l2s=c=>c<=0.0031308?12.92*c:1.055*Math.pow(c,1/2.4)-0.055;
+function hex2lin(h){return [1,3,5].map(i=>s2l(parseInt(h.substr(i,2),16)/255));}
+function bulbX(i){return (i-1)*state.spacing;}
+function autoExposure(){ // single bulb, power 1, directly below: E=1/H^2; reference albedo 0.8
+  return 1.2/((0.8/Math.PI)/(state.H*state.H));
+}
+function expMul(){return autoExposure()*Math.pow(2,state.exp);}
+
+// ---------- UI ----------
+const bulbsEl=document.getElementById('bulbs'), names=['Left bulb','Centre bulb','Right bulb'];
+const colIn=[],intIn=[],onIn=[];
+names.forEach((n,i)=>{
+  const d=document.createElement('div'); d.className='bulb';
+  d.innerHTML=`<div class="row"><input type="color" value="${state.cols[i]}"><span style="width:84px">${n}</span>
+  <input type="range" min="0" max="2" step="0.01" value="1" title="Intensity"><label class="chk"><input type="checkbox" checked>on</label></div>`;
+  bulbsEl.appendChild(d);
+  const [c,,r,o]=[d.querySelector('input[type=color]'),0,d.querySelector('input[type=range]'),d.querySelector('input[type=checkbox]')];
+  colIn.push(c);intIn.push(r);onIn.push(o);
+  c.oninput=()=>{state.cols[i]=c.value;dirty();};
+  r.oninput=()=>{state.inten[i]=+r.value;dirty();};
+  o.onchange=()=>{state.on[i]=o.checked;dirty();};
+});
+const sl=document.getElementById('sliders'); const slIn={};
+function addSlider(key,label,min,max,step,fmt){
+  const d=document.createElement('div'); d.className='ctl';
+  d.innerHTML=`<span>${label}</span><input type="range" min="${min}" max="${max}" step="${step}"><span class="v"></span>`;
+  sl.appendChild(d);
+  const r=d.querySelector('input'),v=d.querySelector('.v');
+  slIn[key]={r,v,fmt};
+  r.oninput=()=>{state[key]=+r.value;if(key==='H'){clampH();} sync();dirty();};
+}
+addSlider('R','Bulb radius',0.001,0.15,0.001,v=>(v*100).toFixed(1)+' cm');
+addSlider('h','Hand height',0.1,1.8,0.01,v=>v.toFixed(2)+' m');
+addSlider('H','Bulb height',0.8,4,0.01,v=>v.toFixed(2)+' m');
+addSlider('spacing','Spacing',0.1,0.9,0.01,v=>v.toFixed(2)+' m');
+addSlider('alb','Floor albedo',0.05,1,0.01,v=>v.toFixed(2));
+addSlider('exp','Exposure',-3,3,0.05,v=>(v>=0?'+':'')+v.toFixed(2)+' EV');
+function clampH(){ const mx=state.H-0.2; slIn.h.r.max=mx; if(state.h>mx) state.h=mx; }
+function sync(){
+  for(const k in slIn){slIn[k].r.value=state[k];slIn[k].v.textContent=slIn[k].fmt(state[k]);}
+  colIn.forEach((c,i)=>{c.value=state.cols[i];});
+}
+document.getElementById('showHand').onchange=e=>{state.showHand=e.target.checked;dirty();};
+const presets={rgb:['#ff0000','#00ff00','#0000ff'],wc:['#ff8c1a','#ffffff','#00ffff'],cmy:['#00ffff','#ff00ff','#ffff00'],white:['#ffffff','#ffffff','#ffffff']};
+document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>{state.cols=presets[b.dataset.p].slice();sync();dirty();});
+sync();
+
+// ---------- WebGL ----------
+const gl=document.getElementById('gl'), ov=document.getElementById('ov'), sd=document.getElementById('side');
+const g=gl.getContext('webgl',{antialias:false,preserveDrawingBuffer:true});
+const vs=`attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}`;
+const fs=`precision highp float;
+#define NS ${NS}
+uniform vec2 uRes; uniform float uScale; uniform float uH,uh,uR,uAlb,uExp,uHx,uShow;
+uniform float uBx[3]; uniform vec3 uCol[3];
+float sdCap(vec2 p,vec2 a,vec2 b,float r){vec2 pa=p-a,ba=b-a;float h=clamp(dot(pa,ba)/dot(ba,ba),0.,1.);return length(pa-ba*h)-r;}
+float sdRBox(vec2 p,vec2 b,float r){vec2 q=abs(p)-b+r;return length(max(q,0.))+min(max(q.x,q.y),0.)-r;}
+float sdHand(vec2 p){
+  p.y+=0.0475;
+  float d=sdRBox(p,vec2(0.043,0.045),0.02);
+  d=min(d,sdCap(p,vec2(-0.0315,0.035),vec2(-0.0315,0.118),0.0100));
+  d=min(d,sdCap(p,vec2(-0.0105,0.035),vec2(-0.0105,0.130),0.0100));
+  d=min(d,sdCap(p,vec2( 0.0105,0.035),vec2( 0.0105,0.123),0.0100));
+  d=min(d,sdCap(p,vec2( 0.0315,0.035),vec2( 0.0315,0.095),0.0090));
+  d=min(d,sdCap(p,vec2(-0.035,-0.015),vec2(-0.085,0.035),0.0115));
+  return d;
+}
+float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+vec3 enc(vec3 c){return mix(12.92*c,1.055*pow(c,vec3(1./2.4))-0.055,step(0.0031308,c));}
+void main(){
+  vec2 P=(gl_FragCoord.xy-0.5*uRes)/uScale;          // floor point (x,y) in metres
+  float t=uh/uH;                                      // ray parameter at hand plane
+  float aa=0.75*(1./uScale)*(1.-t);                   // ~1 pixel in the hand plane
+  float rot=hash(gl_FragCoord.xy)*6.2831853;
+  vec3 E=vec3(0.);
+  for(int i=0;i<3;i++){
+    float acc=0.;
+    for(int k=0;k<NS;k++){
+      float fk=float(k);
+      float r=uR*sqrt((fk+0.5)/float(NS));
+      float a=fk*2.39996323+rot;
+      vec2 Lxy=vec2(uBx[i]+r*cos(a), r*sin(a));
+      vec3 d=vec3(Lxy-P,uH);
+      float r2=dot(d,d); float dist=sqrt(r2);
+      float cosT=uH/dist;
+      vec2 q=P+(Lxy-P)*t-vec2(uHx,0.);
+      float vis=smoothstep(-aa,aa,sdHand(q));
+      acc+=cosT/r2*vis;
+    }
+    E+=uCol[i]*acc/float(NS);                         // power split evenly over samples
+  }
+  vec3 rad=uAlb/3.14159265*E;
+  vec3 c=rad*uExp; c=c/(1.+c);                        // Reinhard
+  c=enc(c);
+  if(uShow>0.5){
+    float dh=sdHand(P-vec2(uHx,0.));
+    float w=1./uScale;
+    c=mix(c,vec3(1.),0.16*(1.-smoothstep(0.,w,dh)));
+    c=mix(c,vec3(1.),0.5*(1.-smoothstep(0.,1.5*w,abs(dh))));
+  }
+  c+=(hash(gl_FragCoord.xy+7.)-0.5)/255.;
+  gl_FragColor=vec4(c,1.);
+}`;
+function sh(type,src){const s=g.createShader(type);g.shaderSource(s,src);g.compileShader(s);
+  if(!g.getShaderParameter(s,g.COMPILE_STATUS)) throw new Error(g.getShaderInfoLog(s));return s;}
+const prog=g.createProgram();
+g.attachShader(prog,sh(g.VERTEX_SHADER,vs));g.attachShader(prog,sh(g.FRAGMENT_SHADER,fs));
+g.linkProgram(prog);
+if(!g.getProgramParameter(prog,g.LINK_STATUS)) throw new Error(g.getProgramInfoLog(prog));
+g.useProgram(prog);
+const buf=g.createBuffer();g.bindBuffer(g.ARRAY_BUFFER,buf);
+g.bufferData(g.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),g.STATIC_DRAW);
+const loc=g.getAttribLocation(prog,'a');g.enableVertexAttribArray(loc);g.vertexAttribPointer(loc,2,g.FLOAT,false,0,0);
+const U=n=>g.getUniformLocation(prog,n);
+const u={res:U('uRes'),scale:U('uScale'),H:U('uH'),h:U('uh'),R:U('uR'),alb:U('uAlb'),exp:U('uExp'),hx:U('uHx'),show:U('uShow'),bx:U('uBx[0]'),col:U('uCol[0]')};
+
+// ---------- sizing ----------
+let W=1,Hh=1,SW=1,SH=1,dpr=1,needs=true;
+function resize(){
+  dpr=window.devicePixelRatio||1;
+  const fw=gl.parentElement.getBoundingClientRect(), sw=sd.parentElement.getBoundingClientRect();
+  W=Math.max(1,fw.width);Hh=Math.max(1,fw.height);SW=Math.max(1,sw.width);SH=Math.max(1,sw.height);
+  gl.width=ov.width=Math.round(W*dpr);gl.height=ov.height=Math.round(Hh*dpr);
+  sd.width=Math.round(SW*dpr);sd.height=Math.round(SH*dpr);
+  dirty();
+}
+new ResizeObserver(resize).observe(gl.parentElement);
+new ResizeObserver(resize).observe(sd.parentElement);
+window.addEventListener('resize',resize);
+function dirty(){needs=true;}
+const sxF=()=>W/(2*floorXR());   // css px per metre, floor
+const sxS=()=>SW/(2*sideXR());
+
+function lightColors(){
+  const out=[];
+  for(let i=0;i<3;i++){const l=hex2lin(state.cols[i]);const k=state.on[i]?state.inten[i]:0;out.push(l[0]*k,l[1]*k,l[2]*k);}
+  return out;
+}
+function drawGL(){
+  g.viewport(0,0,gl.width,gl.height);
+  g.uniform2f(u.res,gl.width,gl.height);
+  g.uniform1f(u.scale,sxF()*dpr);
+  g.uniform1f(u.H,state.H);g.uniform1f(u.h,state.h);g.uniform1f(u.R,state.R);
+  g.uniform1f(u.alb,state.alb);g.uniform1f(u.exp,expMul());g.uniform1f(u.hx,state.hx);
+  g.uniform1f(u.show,state.showHand?1:0);
+  g.uniform1fv(u.bx,[bulbX(0),bulbX(1),bulbX(2)]);
+  g.uniform3fv(u.col,lightColors());
+  g.drawArrays(g.TRIANGLES,0,3);
+}
+
+// ---------- overlay (markers, hover) ----------
+function drawOverlay(){
+  const c=ov.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,W,Hh);
+  const s=sxF();
+  for(let i=0;i<3;i++){
+    const x=W/2+bulbX(i)*s,y=Hh/2;
+    c.strokeStyle='rgba(255,255,255,.35)';c.lineWidth=1;
+    c.beginPath();c.arc(x,y,5,0,7);c.moveTo(x-9,y);c.lineTo(x+9,y);c.moveTo(x,y-9);c.lineTo(x,y+9);c.stroke();
+  }
+  if(state.hover){
+    const x=W/2+state.hover.x*s,y=Hh/2-state.hover.y*s;
+    c.strokeStyle='rgba(255,255,255,.8)';c.beginPath();c.arc(x,y,6,0,7);c.stroke();
+  }
+}
+
+// ---------- JS mirror of the physics for readout ----------
+function sampleAt(x,y){
+  const N=96,t=state.h/state.H,vis=[0,0,0];const E=[0,0,0];
+  const L=lightColors();
+  for(let i=0;i<3;i++){
+    let vs=0,acc=0;
+    for(let k=0;k<N;k++){
+      const r=state.R*Math.sqrt((k+0.5)/N),a=k*2.39996323;
+      const lx=bulbX(i)+r*Math.cos(a),ly=r*Math.sin(a);
+      const dx=lx-x,dy=ly-y,r2=dx*dx+dy*dy+state.H*state.H,d=Math.sqrt(r2);
+      const qx=x+dx*t-state.hx,qy=y+dy*t;
+      const v=sdHand(qx,qy)<0?0:1;
+      vs+=v;acc+=v*(state.H/d)/r2;
+    }
+    vis[i]=vs/N;
+    for(let c=0;c<3;c++)E[c]+=L[i*3+c]*acc/N;
+  }
+  const m=expMul(),rgb=E.map(e=>{const v=state.alb/Math.PI*e*m;return Math.min(1,Math.max(0,l2s(v/(1+v))));});
+  return {vis,rgb};
+}
+const ro=document.getElementById('readout');
+function showReadout(x,y){
+  state.hover={x,y};
+  const r=sampleAt(x,y),cs=r.rgb.map(v=>Math.round(v*255));
+  const nm=['Left','Centre','Right'];
+  ro.style.display='block';
+  ro.innerHTML=`<div><span class="sw" style="background:rgb(${cs})"></span>rgb(${cs.join(', ')})</div>`+
+    r.vis.map((v,i)=>`<div style="color:${state.cols[i]}">${nm[i]}: ${Math.round(v*100)}% visible</div>`).join('')+
+    `<div style="color:#8b93a7">x ${x.toFixed(2)} m, y ${y.toFixed(2)} m</div>`;
+}
+function hideReadout(){state.hover=null;ro.style.display='none';dirty();}
+
+// ---------- side view ----------
+function drawSide(){
+  const c=sd.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,SW,SH);
+  const s=sxS(),top=26,bot=SH-22,zmax=state.H+0.25;
+  const X=x=>SW/2+x*s,Z=z=>bot-(z/zmax)*(bot-top);
+  // floor
+  c.fillStyle='#1a1e28';c.fillRect(0,bot,SW,SH-bot);
+  c.strokeStyle='#3a4156';c.lineWidth=1.5;c.beginPath();c.moveTo(0,bot);c.lineTo(SW,bot);c.stroke();
+  // hand slab edges at y=0
+  const ed=[];const XR=sideXR();let prev=sdHand(-XR-state.hx,0)<0;
+  const step=0.002;
+  for(let x=-XR;x<=XR;x+=step){const inn=sdHand(x-state.hx,0)<0;if(inn!==prev){ed.push(x);prev=inn;}}
+  // rays
+  const ray=(bx,bz,ex,ez,col)=>{ // line from bulb edge through hand edge to floor
+    const k=(bz-0)/(bz-ez);const fx=bx+(ex-bx)*k;
+    c.strokeStyle=col;c.beginPath();c.moveTo(X(bx),Z(bz));c.lineTo(X(fx),Z(0));c.stroke();return fx;
+  };
+  c.lineWidth=1;
+  for(let i=0;i<3;i++){
+    if(!state.on[i]||state.inten[i]<=0)continue;
+    const rgb=hex2lin(state.cols[i]).map(l2s).map(v=>Math.round(v*255));
+    const col=`rgba(${rgb},0.38)`;
+    for(const e of ed){ray(bulbX(i)-state.R,state.H,e,state.h,col);ray(bulbX(i)+state.R,state.H,e,state.h,col);}
+  }
+  // hand slab
+  c.fillStyle='#e8c9a8';
+  for(let j=0;j<ed.length;j+=2){if(ed[j+1]===undefined)break;
+    c.fillRect(X(ed[j]),Z(state.h)-2,Math.max(2,(ed[j+1]-ed[j])*s),4);}
+  c.fillStyle='#9aa3b8';c.font='11px sans-serif';
+  c.fillText('hand h='+state.h.toFixed(2)+' m',X(state.hx)-30,Z(state.h)-8);
+  // bulbs
+  for(let i=0;i<3;i++){
+    const rgb=hex2lin(state.cols[i]).map(l2s).map(v=>Math.round(v*255));
+    const on=state.on[i]&&state.inten[i]>0;
+    const rr=Math.max(4,state.R*s);
+    c.fillStyle=on?`rgb(${rgb})`:'#333';
+    if(on){c.shadowColor=`rgb(${rgb})`;c.shadowBlur=14;}
+    c.beginPath();c.arc(X(bulbX(i)),Z(state.H),rr,0,7);c.fill();c.shadowBlur=0;
+    c.strokeStyle='#fff6';c.stroke();
+  }
+  c.fillStyle='#8b93a7';c.fillText('H='+state.H.toFixed(2)+' m',8,Z(state.H)+4);
+}
+
+// ---------- dragging ----------
+function bindDrag(el,scale,isFloor){
+  let drag=false,off=0;
+  const mx=e=>{const r=el.getBoundingClientRect();return (e.clientX-r.left-r.width/2)/scale();};
+  el.addEventListener('pointerdown',e=>{drag=true;off=state.hx-mx(e);el.setPointerCapture(e.pointerId);e.preventDefault();});
+  el.addEventListener('pointermove',e=>{
+    if(drag){const XR=sideXR();state.hx=Math.max(-XR+0.1,Math.min(XR-0.1,mx(e)+off));}
+    if(isFloor){const r=el.getBoundingClientRect();showReadout((e.clientX-r.left-r.width/2)/scale(),(r.height/2-(e.clientY-r.top))/scale());}
+    dirty();
+  });
+  const up=()=>{drag=false;};
+  el.addEventListener('pointerup',up);el.addEventListener('pointercancel',up);
+  if(isFloor)el.addEventListener('pointerleave',()=>{if(!drag)hideReadout();});
+}
+bindDrag(gl.parentElement,sxF,true);
+bindDrag(sd.parentElement,sxS,false);
+
+function frame(){
+  if(needs){needs=false;drawGL();drawOverlay();drawSide();}
+  requestAnimationFrame(frame);
+}
+resize();frame();
+})();
+</script>
+</body>
+</html>
